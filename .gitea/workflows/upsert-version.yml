@@ -1,0 +1,112 @@
+name: Upsert Version
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to create or patch (e.g. v1.0.0)'
+        required: true
+      changelog:
+        description: 'Changelog entries, one per line (auto-built from git log on tag push)'
+        required: false
+      asset_source:
+        description: 'Source asset URL (auto-built from tag on push; required on manual create)'
+        required: false
+      asset_binary:
+        description: 'Binary asset URL'
+        required: false
+      repo_tag_gitea:
+        description: 'Gitea tag URL (auto-built from server URL; leave blank to keep existing)'
+        required: false
+      repo_tag_github:
+        description: 'GitHub tag URL (auto-built from GITHUB_MIRROR_URL; leave blank to keep existing)'
+        required: false
+      license:
+        description: 'License identifier (auto-detected if blank)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  upsert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version metadata
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${{ inputs.version }}"
+          fi
+
+          if [ -f "package.json" ]; then
+            LICENSE=$(jq -r '.license // "MIT"' package.json)
+            RAW_NAME=$(jq -r '.name' package.json)
+            PROJECT_NAME="${RAW_NAME##*/}"
+          elif [ -f "LICENSE" ]; then
+            LICENSE=$(head -1 LICENSE | grep -oP '(?<=^)\w+ License' | head -1 || echo "MIT")
+            PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
+          else
+            LICENSE="MIT"
+            PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
+          fi
+
+          [ -n "${{ inputs.license }}" ] && LICENSE="${{ inputs.license }}"
+
+          CHANGELOG="${{ inputs.changelog }}"
+          if [ -z "$CHANGELOG" ] && [ "${{ github.event_name }}" = "push" ]; then
+            PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${TAG}$" | head -1)
+            if [ -n "$PREV_TAG" ]; then
+              CHANGELOG=$(git log "${PREV_TAG}..${TAG}" --pretty=format:"%s" --no-merges | head -20)
+            else
+              CHANGELOG=$(git log "${TAG}" --pretty=format:"%s" --no-merges | head -20)
+            fi
+          fi
+
+          # On Gitea Actions, GITHUB_SERVER_URL resolves to the Gitea instance
+          ASSET_SOURCE="${{ inputs.asset_source }}"
+          [ -z "$ASSET_SOURCE" ] && \
+            ASSET_SOURCE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+
+          REPO_TAG_GITEA="${{ inputs.repo_tag_gitea }}"
+          [ -z "$REPO_TAG_GITEA" ] && \
+            REPO_TAG_GITEA="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+
+          REPO_TAG_GITHUB="${{ inputs.repo_tag_github }}"
+          if [ -z "$REPO_TAG_GITHUB" ] && [ -n "${{ vars.GITHUB_MIRROR_URL }}" ]; then
+            REPO_TAG_GITHUB="${{ vars.GITHUB_MIRROR_URL }}/releases/tag/${TAG}"
+          fi
+
+          echo "version=${TAG}" >> $GITHUB_OUTPUT
+          echo "project_name=${PROJECT_NAME}" >> $GITHUB_OUTPUT
+          echo "license=${LICENSE}" >> $GITHUB_OUTPUT
+          echo "asset_source=${ASSET_SOURCE}" >> $GITHUB_OUTPUT
+          echo "repo_tag_github=${REPO_TAG_GITHUB}" >> $GITHUB_OUTPUT
+          echo "repo_tag_gitea=${REPO_TAG_GITEA}" >> $GITHUB_OUTPUT
+          {
+            echo "changelog<<EOF"
+            echo "$CHANGELOG"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Upsert version in registry
+        uses: ./actions/upsert-version
+        with:
+          project_name: ${{ steps.meta.outputs.project_name }}
+          version: ${{ steps.meta.outputs.version }}
+          changelog: ${{ steps.meta.outputs.changelog }}
+          asset_source: ${{ steps.meta.outputs.asset_source }}
+          repo_tag_github: ${{ steps.meta.outputs.repo_tag_github }}
+          repo_tag_gitea: ${{ steps.meta.outputs.repo_tag_gitea }}
+          license: ${{ steps.meta.outputs.license }}
+          registry_repo: registry
+          registry_owner: ${{ vars.GITEA_ORG || github.repository_owner }}
+          github_token: ${{ secrets.GITEA_REGISTRY_TOKEN }}

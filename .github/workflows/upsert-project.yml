@@ -1,0 +1,91 @@
+# Registers or updates this repository's project record in the ddproxy registry.
+# Run manually at any time — creates the record on first run, patches it on
+# subsequent runs. Only fields provided at dispatch time are changed.
+#
+# Required secrets:
+#   REGISTRY_TOKEN  - Token with write access to the registry repository
+#
+# Optional repository variables:
+#   GITEA_BASE_URL  - Base URL of your Gitea instance (e.g. https://git.example.com)
+#   GITEA_ORG       - Gitea org that owns this repo (e.g. com.example)
+
+name: Upsert Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      display_name:
+        description: 'Display name (auto-generated from repo name if blank on create)'
+        required: false
+      description:
+        description: 'Project description (auto-detected from package.json if blank)'
+        required: false
+      repo_gitea:
+        description: 'Gitea URL (auto-built from GITEA_BASE_URL+GITEA_ORG if blank)'
+        required: false
+      repo_github:
+        description: 'GitHub URL (defaults to this repository)'
+        required: false
+      tags:
+        description: 'Comma-separated tags'
+        required: false
+      license:
+        description: 'License identifier (auto-detected from package.json if blank)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  upsert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve metadata
+        id: meta
+        run: |
+          if [ -f "package.json" ]; then
+            RAW_NAME=$(jq -r '.name' package.json)
+            PROJECT_NAME="${RAW_NAME##*/}"
+            AUTO_DESC=$(jq -r '.description // ""' package.json)
+            AUTO_LICENSE=$(jq -r '.license // "MIT"' package.json)
+          else
+            PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
+            AUTO_DESC=""
+            AUTO_LICENSE="MIT"
+          fi
+
+          DESCRIPTION="${{ inputs.description }}"
+          [ -z "$DESCRIPTION" ] && DESCRIPTION="$AUTO_DESC"
+
+          LICENSE="${{ inputs.license }}"
+          [ -z "$LICENSE" ] && LICENSE="$AUTO_LICENSE"
+
+          REPO_GITHUB="${{ inputs.repo_github }}"
+          [ -z "$REPO_GITHUB" ] && REPO_GITHUB="https://github.com/${GITHUB_REPOSITORY}"
+
+          REPO_GITEA="${{ inputs.repo_gitea }}"
+          if [ -z "$REPO_GITEA" ] && [ -n "${{ vars.GITEA_BASE_URL }}" ] && [ -n "${{ vars.GITEA_ORG }}" ]; then
+            REPO_GITEA="${{ vars.GITEA_BASE_URL }}/${{ vars.GITEA_ORG }}/${PROJECT_NAME}"
+          fi
+
+          echo "project_name=${PROJECT_NAME}" >> $GITHUB_OUTPUT
+          echo "description=${DESCRIPTION}" >> $GITHUB_OUTPUT
+          echo "license=${LICENSE}" >> $GITHUB_OUTPUT
+          echo "repo_github=${REPO_GITHUB}" >> $GITHUB_OUTPUT
+          echo "repo_gitea=${REPO_GITEA}" >> $GITHUB_OUTPUT
+
+      - name: Upsert project in registry
+        uses: ./actions/upsert-project
+        with:
+          project_name: ${{ steps.meta.outputs.project_name }}
+          display_name: ${{ inputs.display_name }}
+          description: ${{ steps.meta.outputs.description }}
+          repo_github: ${{ steps.meta.outputs.repo_github }}
+          repo_gitea: ${{ steps.meta.outputs.repo_gitea }}
+          tags: ${{ inputs.tags }}
+          license: ${{ steps.meta.outputs.license }}
+          registry_repo: project-registry
+          registry_owner: ddproxy
+          github_token: ${{ secrets.REGISTRY_TOKEN }}

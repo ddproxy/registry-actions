@@ -1,0 +1,162 @@
+name: 'Upsert Version in Registry'
+description: >
+  Creates or updates a version record in a project registry repository.
+  If the version does not exist it is created (asset_source is required in this case);
+  if it already exists, only the provided (non-blank) fields are patched.
+  The version index and project latestVersion field are kept in sync automatically.
+inputs:
+  project_name:
+    description: 'The project slug (e.g., my-project).'
+    required: true
+  version:
+    description: 'The version string (e.g., v1.0.0).'
+    required: true
+  changelog:
+    description: 'Newline-delimited list of changes. On create, defaults to an empty list if blank.'
+    required: false
+    default: ''
+  asset_source:
+    description: 'Source code download URL. Required when creating a new version record.'
+    required: false
+    default: ''
+  asset_binary:
+    description: 'Binary download URL.'
+    required: false
+    default: ''
+  repo_tag_github:
+    description: 'GitHub tag URL for this version.'
+    required: false
+    default: ''
+  repo_tag_gitea:
+    description: 'Gitea tag URL for this version.'
+    required: false
+    default: ''
+  license:
+    description: 'License identifier. Defaults to MIT on create.'
+    required: false
+    default: ''
+  registry_repo:
+    description: 'The registry repository name.'
+    required: false
+    default: 'project-registry'
+  registry_owner:
+    description: 'The owner/org of the registry repo. Defaults to current repository owner.'
+    required: false
+  github_token:
+    description: 'Token with write access to the registry repository.'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout registry
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ inputs.registry_owner || github.repository_owner }}/${{ inputs.registry_repo }}
+        token: ${{ inputs.github_token }}
+        path: registry-tmp
+
+    - name: Upsert version record
+      shell: bash
+      run: |
+        VERSION_DIR="registry-tmp/projects/${{ inputs.project_name }}/versions"
+        VERSION_FILE="$VERSION_DIR/${{ inputs.version }}.json"
+        VERSION_INDEX="$VERSION_DIR/index.json"
+        PROJECT_FILE="registry-tmp/projects/${{ inputs.project_name }}.json"
+
+        mkdir -p "$VERSION_DIR"
+
+        if [ -f "$VERSION_FILE" ]; then
+          # ── UPDATE: patch only non-blank fields ───────────────────────────
+          jq \
+            --arg changelog_raw "${{ inputs.changelog }}" \
+            --arg asset_source "${{ inputs.asset_source }}" \
+            --arg asset_binary "${{ inputs.asset_binary }}" \
+            --arg repo_tag_github "${{ inputs.repo_tag_github }}" \
+            --arg repo_tag_gitea "${{ inputs.repo_tag_gitea }}" \
+            --arg license "${{ inputs.license }}" \
+            '
+              if $changelog_raw != "" then
+                .changelog = ($changelog_raw | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))
+              else . end |
+              if $asset_source != "" then .assets.source = [$asset_source] else . end |
+              if $asset_binary != "" then .assets.binary = [$asset_binary] else . end |
+              if $repo_tag_github != "" then .repoLinks.githubTag = $repo_tag_github else . end |
+              if $repo_tag_gitea != "" then .repoLinks.giteaTag = $repo_tag_gitea else . end |
+              if $license != "" then .license = $license else . end
+            ' \
+            "$VERSION_FILE" > "$VERSION_FILE.tmp" && mv "$VERSION_FILE.tmp" "$VERSION_FILE"
+
+          echo "Updated version: ${{ inputs.version }} for project ${{ inputs.project_name }}"
+        else
+          # ── CREATE: build full record, asset_source is required ───────────
+          if [ -z "${{ inputs.asset_source }}" ]; then
+            echo "Error: asset_source is required when creating a new version record."
+            exit 1
+          fi
+
+          LICENSE="${{ inputs.license }}"
+          [ -z "$LICENSE" ] && LICENSE="MIT"
+
+          jq -n \
+            --arg version "${{ inputs.version }}" \
+            --arg date "$(date -I)" \
+            --arg changelog_raw "${{ inputs.changelog }}" \
+            --arg asset_source "${{ inputs.asset_source }}" \
+            --arg asset_binary "${{ inputs.asset_binary }}" \
+            --arg repo_tag_github "${{ inputs.repo_tag_github }}" \
+            --arg repo_tag_gitea "${{ inputs.repo_tag_gitea }}" \
+            --arg license "$LICENSE" \
+            '{
+              version: $version,
+              date: $date,
+              changelog: (if $changelog_raw != "" then
+                ($changelog_raw | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))
+              else [] end),
+              assets: {
+                source: [$asset_source],
+                binary: (if $asset_binary != "" then [$asset_binary] else null end)
+              } | with_entries(select(.value != null)),
+              repoLinks: {
+                githubTag: (if $repo_tag_github != "" then $repo_tag_github else null end),
+                giteaTag: (if $repo_tag_gitea != "" then $repo_tag_gitea else null end)
+              },
+              license: $license
+            }' > "$VERSION_FILE"
+
+          # Update latestVersion in project metadata
+          if [ -f "$PROJECT_FILE" ]; then
+            jq --arg version "${{ inputs.version }}" \
+              '.latestVersion = $version' \
+              "$PROJECT_FILE" > "$PROJECT_FILE.tmp" && mv "$PROJECT_FILE.tmp" "$PROJECT_FILE"
+          else
+            echo "Warning: Project file $PROJECT_FILE not found. Run upsert-project first."
+          fi
+
+          echo "Created version: ${{ inputs.version }} for project ${{ inputs.project_name }}"
+        fi
+
+    - name: Sync version into index
+      shell: bash
+      run: |
+        VERSION_FILE="registry-tmp/projects/${{ inputs.project_name }}/versions/${{ inputs.version }}.json"
+        VERSION_INDEX="registry-tmp/projects/${{ inputs.project_name }}/versions/index.json"
+
+        if [ ! -f "$VERSION_INDEX" ]; then
+          echo '[]' > "$VERSION_INDEX"
+        fi
+
+        # Replace matching entry or append if new
+        jq --argjson v "$(cat "$VERSION_FILE")" \
+          'map(if .version == $v.version then $v else . end) as $updated
+           | if ($updated | map(.version) | contains([$v.version])) then $updated else $updated + [$v] end' \
+          "$VERSION_INDEX" > "$VERSION_INDEX.tmp" && mv "$VERSION_INDEX.tmp" "$VERSION_INDEX"
+
+    - name: Commit and push changes
+      shell: bash
+      run: |
+        cd registry-tmp
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add .
+        git commit -m "Upsert version ${{ inputs.version }} for project ${{ inputs.project_name }}" || echo "No changes to commit"
+        git push
