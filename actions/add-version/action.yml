@@ -8,7 +8,7 @@ inputs:
     description: 'The version string (e.g., v1.0.0)'
     required: true
   changelog:
-    description: 'A comma-separated list of changes'
+    description: 'A newline-delimited list of changes'
     required: true
   asset_source:
     description: 'The download URL for the source code'
@@ -65,7 +65,7 @@ runs:
           '{
             version: $version,
             date: $date,
-            changelog: ($changelog_raw | split(",") | map(gsub("^\\s+|\\s+$"; ""))),
+            changelog: ($changelog_raw | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
             assets: {
               source: [$asset_source],
               binary: (if $asset_binary != "" then [$asset_binary] else null end)

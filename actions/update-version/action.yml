@@ -1,0 +1,107 @@
+name: 'Update Version in Registry'
+description: 'Patches an existing version record in a project registry repository. Only provided fields are updated; omitted fields are left unchanged. Updates both the version file and the version index.'
+inputs:
+  project_name:
+    description: 'The project slug (e.g., my-project)'
+    required: true
+  version:
+    description: 'The version string identifying the record to update (e.g., v1.0.0)'
+    required: true
+  changelog:
+    description: 'Replacement newline-delimited changelog (leave blank to keep existing)'
+    required: false
+    default: ''
+  asset_source:
+    description: 'New source asset URL (leave blank to keep existing)'
+    required: false
+    default: ''
+  asset_binary:
+    description: 'New binary asset URL (leave blank to keep existing)'
+    required: false
+    default: ''
+  repo_tag_github:
+    description: 'New GitHub tag URL (leave blank to keep existing)'
+    required: false
+    default: ''
+  repo_tag_gitea:
+    description: 'New Gitea tag URL (leave blank to keep existing)'
+    required: false
+    default: ''
+  license:
+    description: 'New license identifier (leave blank to keep existing)'
+    required: false
+    default: ''
+  registry_repo:
+    description: 'The registry repository'
+    required: false
+    default: 'project-registry'
+  registry_owner:
+    description: 'The owner/org of the registry repo (defaults to current)'
+    required: false
+  github_token:
+    description: 'The GitHub token for making changes'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout registry
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ inputs.registry_owner || github.repository_owner }}/${{ inputs.registry_repo }}
+        token: ${{ inputs.github_token }}
+        path: registry-tmp
+
+    - name: Patch version file
+      shell: bash
+      run: |
+        VERSION_FILE="registry-tmp/projects/${{ inputs.project_name }}/versions/${{ inputs.version }}.json"
+
+        if [ ! -f "$VERSION_FILE" ]; then
+          echo "Error: Version file $VERSION_FILE not found. Use add-version to create it first."
+          exit 1
+        fi
+
+        jq \
+          --arg changelog_raw "${{ inputs.changelog }}" \
+          --arg asset_source "${{ inputs.asset_source }}" \
+          --arg asset_binary "${{ inputs.asset_binary }}" \
+          --arg repo_tag_github "${{ inputs.repo_tag_github }}" \
+          --arg repo_tag_gitea "${{ inputs.repo_tag_gitea }}" \
+          --arg license "${{ inputs.license }}" \
+          '
+            if $changelog_raw != "" then
+              .changelog = ($changelog_raw | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))
+            else . end |
+            if $asset_source != "" then .assets.source = [$asset_source] else . end |
+            if $asset_binary != "" then .assets.binary = [$asset_binary] else . end |
+            if $repo_tag_github != "" then .repoLinks.githubTag = $repo_tag_github else . end |
+            if $repo_tag_gitea != "" then .repoLinks.giteaTag = $repo_tag_gitea else . end |
+            if $license != "" then .license = $license else . end
+          ' \
+          "$VERSION_FILE" > "$VERSION_FILE.tmp" && mv "$VERSION_FILE.tmp" "$VERSION_FILE"
+
+    - name: Sync version into index
+      shell: bash
+      run: |
+        VERSION_INDEX="registry-tmp/projects/${{ inputs.project_name }}/versions/index.json"
+        VERSION_FILE="registry-tmp/projects/${{ inputs.project_name }}/versions/${{ inputs.version }}.json"
+
+        if [ ! -f "$VERSION_INDEX" ]; then
+          echo "Warning: Version index $VERSION_INDEX not found; skipping index sync."
+          exit 0
+        fi
+
+        # Replace the matching entry in the index with the updated version object
+        jq --argjson updated "$(cat "$VERSION_FILE")" \
+          'map(if .version == $updated.version then $updated else . end)' \
+          "$VERSION_INDEX" > "$VERSION_INDEX.tmp" && mv "$VERSION_INDEX.tmp" "$VERSION_INDEX"
+
+    - name: Commit and push changes
+      shell: bash
+      run: |
+        cd registry-tmp
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add .
+        git commit -m "Update version ${{ inputs.version }} for project ${{ inputs.project_name }}" || echo "No changes to commit"
+        git push

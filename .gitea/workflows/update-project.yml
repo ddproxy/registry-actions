@@ -1,0 +1,76 @@
+# Gitea variant of update-project.yml.
+# Patches this repository's project record in the Gitea-hosted registry.
+#
+# Required secrets:
+#   GITEA_REGISTRY_TOKEN  - A Gitea token with write access to the registry repo
+#
+# Optional repository variables:
+#   GITEA_ORG          - Gitea org (defaults to repository owner)
+#   GITHUB_MIRROR_URL  - Full GitHub repo URL if mirrored (e.g. https://github.com/ddproxy/my-repo)
+
+name: Update Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      display_name:
+        description: 'New display name (leave blank to keep existing)'
+        required: false
+      description:
+        description: 'New description (leave blank to keep existing)'
+        required: false
+      repo_gitea:
+        description: 'Gitea repository URL (leave blank to auto-build from server URL)'
+        required: false
+      repo_github:
+        description: 'GitHub mirror URL (leave blank to use GITHUB_MIRROR_URL var)'
+        required: false
+      tags:
+        description: 'Replacement comma-separated tags (leave blank to keep existing)'
+        required: false
+      license:
+        description: 'New license (leave blank to keep existing)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve project name and repo URLs
+        id: meta
+        run: |
+          if [ -f "package.json" ]; then
+            RAW_NAME=$(jq -r '.name' package.json)
+            PROJECT_NAME="${RAW_NAME##*/}"
+          else
+            PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
+          fi
+
+          REPO_GITEA="${{ inputs.repo_gitea }}"
+          [ -z "$REPO_GITEA" ] && REPO_GITEA="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
+          REPO_GITHUB="${{ inputs.repo_github }}"
+          [ -z "$REPO_GITHUB" ] && REPO_GITHUB="${{ vars.GITHUB_MIRROR_URL }}"
+
+          echo "project_name=${PROJECT_NAME}" >> $GITHUB_OUTPUT
+          echo "repo_gitea=${REPO_GITEA}" >> $GITHUB_OUTPUT
+          echo "repo_github=${REPO_GITHUB}" >> $GITHUB_OUTPUT
+
+      - name: Update project in registry
+        uses: ddproxy/registry-actions/actions/update-project@v0.1.0
+        with:
+          project_name: ${{ steps.meta.outputs.project_name }}
+          display_name: ${{ inputs.display_name }}
+          description: ${{ inputs.description }}
+          repo_github: ${{ steps.meta.outputs.repo_github }}
+          repo_gitea: ${{ steps.meta.outputs.repo_gitea }}
+          tags: ${{ inputs.tags }}
+          license: ${{ inputs.license }}
+          registry_repo: registry
+          registry_owner: ${{ vars.GITEA_ORG || github.repository_owner }}
+          github_token: ${{ secrets.GITEA_REGISTRY_TOKEN }}
