@@ -21,7 +21,6 @@ runs:
   using: 'composite'
   steps:
     - name: Trigger Dispatch
-      uses: actions/checkout@v6
       shell: bash
       run: |
         # Validate inputs is valid JSON
