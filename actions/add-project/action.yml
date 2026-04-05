@@ -1,0 +1,100 @@
+name: 'Add Project to Registry'
+description: 'Adds a new project metadata record to a project registry repository.'
+inputs:
+  project_name:
+    description: 'The project slug (e.g., my-project)'
+    required: true
+  display_name:
+    description: 'The human-readable name of the project'
+    required: true
+  description:
+    description: 'A brief description of the project'
+    required: true
+  repo_github:
+    description: 'The GitHub repository URL for the project'
+    required: false
+  repo_gitea:
+    description: 'The Gitea repository URL for the project'
+    required: false
+  tags:
+    description: 'A comma-separated list of tags'
+    required: false
+    default: 'project'
+  license:
+    description: 'The license type (e.g., MIT)'
+    required: false
+    default: 'MIT'
+  registry_repo:
+    description: 'The registry repository (defaults to project-registry)'
+    required: false
+    default: 'project-registry'
+  registry_owner:
+    description: 'The owner/org of the registry repo (defaults to current)'
+    required: false
+  github_token:
+    description: 'The GitHub token for making changes and dispatching events'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout registry
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ inputs.registry_owner || github.repository_owner }}/${{ inputs.registry_repo }}
+        token: ${{ inputs.github_token }}
+        path: registry-tmp
+
+    - name: Update registry data
+      shell: bash
+      run: |
+        PROJECT_DIR="registry-tmp/projects"
+        mkdir -p "$PROJECT_DIR"
+        
+        # Validate project name (slug-like)
+        if [[ ! "${{ inputs.project_name }}" =~ ^[a-z0-9-]+$ ]]; then
+          echo "Error: project_name must be alphanumeric and can contain hyphens."
+          exit 1
+        fi
+
+        # Create project metadata using jq for safety
+        jq -n \
+          --arg name "${{ inputs.project_name }}" \
+          --arg displayName "${{ inputs.display_name }}" \
+          --arg description "${{ inputs.description }}" \
+          --arg tags_raw "${{ inputs.tags }}" \
+          --arg repo_github "${{ inputs.repo_github }}" \
+          --arg repo_gitea "${{ inputs.repo_gitea }}" \
+          --arg license "${{ inputs.license }}" \
+          '{
+            name: $name,
+            displayName: $displayName,
+            description: $description,
+            tags: ($tags_raw | split(",") | map(gsub("^\\s+|\\s+$"; ""))),
+            repo: {
+              github: (if $repo_github != "" then $repo_github else null end),
+              gitea: (if $repo_gitea != "" then $repo_gitea else null end)
+            },
+            latestVersion: "v0.0.0",
+            license: $license
+          }' > "$PROJECT_DIR/${{ inputs.project_name }}.json"
+        
+        # Update index.json
+        INDEX_FILE="registry-tmp/index.json"
+        if [ ! -f "$INDEX_FILE" ]; then
+          echo '{"projects": []}' > "$INDEX_FILE"
+        fi
+        
+        # Add to index if not already present using jq
+        jq --arg project "${{ inputs.project_name }}" \
+          'if .projects | contains([$project]) then . else .projects += [$project] end' \
+          "$INDEX_FILE" > "$INDEX_FILE.tmp" && mv "$INDEX_FILE.tmp" "$INDEX_FILE"
+
+    - name: Commit and push changes
+      shell: bash
+      run: |
+        cd registry-tmp
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add .
+        git commit -m "Add project: ${{ inputs.project_name }}" || echo "No changes to commit"
+        git push

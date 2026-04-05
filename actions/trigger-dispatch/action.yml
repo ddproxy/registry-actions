@@ -1,0 +1,38 @@
+name: 'Trigger Registry Dispatch'
+description: 'Triggers a workflow dispatch in a registry repository.'
+inputs:
+  workflow_name:
+    description: 'The name of the workflow file to trigger (e.g., add-version.yml)'
+    required: true
+  registry_repo:
+    description: 'The registry repository (defaults to project-registry)'
+    required: false
+    default: 'project-registry'
+  registry_owner:
+    description: 'The owner/org of the registry repo (defaults to current)'
+    required: false
+  github_token:
+    description: 'The GitHub token for making changes'
+    required: true
+  inputs:
+    description: 'JSON string of inputs to pass to the workflow'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Trigger Dispatch
+      uses: actions/checkout@v6
+      shell: bash
+      run: |
+        # Validate inputs is valid JSON
+        if ! echo '${{ inputs.inputs }}' | jq . > /dev/null 2>&1; then
+          echo "Error: 'inputs' must be a valid JSON string."
+          exit 1
+        fi
+
+        REPO="${{ inputs.registry_owner || github.repository_owner }}/${{ inputs.registry_repo }}"
+        gh workflow run "${{ inputs.workflow_name }}" \
+          --repo "$REPO" \
+          --json-inputs '${{ inputs.inputs }}'
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
