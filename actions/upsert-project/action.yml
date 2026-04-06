@@ -39,7 +39,7 @@ inputs:
     description: 'The owner/org of the registry repo. Defaults to current repository owner.'
     required: false
   github_token:
-    description: 'Token with write access to the registry repository.'
+    description: 'Token with contents:write access on the registry repository.'
     required: true
 runs:
   using: 'composite'
@@ -58,7 +58,6 @@ runs:
         PROJECT_FILE="$PROJECT_DIR/${{ inputs.project_name }}.json"
         INDEX_FILE="registry-tmp/index.json"
 
-        # Validate project name
         if [[ ! "${{ inputs.project_name }}" =~ ^[a-z0-9-]+$ ]]; then
           echo "Error: project_name must be lowercase alphanumeric with hyphens only."
           exit 1
@@ -67,7 +66,6 @@ runs:
         mkdir -p "$PROJECT_DIR"
 
         if [ -f "$PROJECT_FILE" ]; then
-          # ── UPDATE: patch only non-blank fields ───────────────────────────
           jq \
             --arg display_name "${{ inputs.display_name }}" \
             --arg description "${{ inputs.description }}" \
@@ -87,7 +85,6 @@ runs:
 
           echo "Updated project: ${{ inputs.project_name }}"
         else
-          # ── CREATE: build full record with defaults for blank fields ──────
           DISPLAY_NAME="${{ inputs.display_name }}"
           if [ -z "$DISPLAY_NAME" ]; then
             DISPLAY_NAME=$(echo "${{ inputs.project_name }}" | \
@@ -121,7 +118,6 @@ runs:
               license: $license
             }' > "$PROJECT_FILE"
 
-          # Add to index.json if not already present
           if [ ! -f "$INDEX_FILE" ]; then
             echo '{"projects": []}' > "$INDEX_FILE"
           fi

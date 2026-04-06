@@ -63,16 +63,29 @@ jobs:
           echo "repo_github=${REPO_GITHUB}" >> $GITHUB_OUTPUT
           echo "repo_gitea=${REPO_GITEA}" >> $GITHUB_OUTPUT
 
-      - name: Upsert project in registry
-        uses: ./actions/upsert-project
-        with:
-          project_name: ${{ steps.meta.outputs.project_name }}
-          display_name: ${{ inputs.display_name }}
-          description: ${{ steps.meta.outputs.description }}
-          repo_github: ${{ steps.meta.outputs.repo_github }}
-          repo_gitea: ${{ steps.meta.outputs.repo_gitea }}
-          tags: ${{ inputs.tags }}
-          license: ${{ steps.meta.outputs.license }}
-          registry_repo: registry
-          registry_owner: ${{ vars.GITEA_ORG || github.repository_owner }}
-          github_token: ${{ secrets.GITEA_REGISTRY_TOKEN }}
+      - name: Dispatch upsert-project to registry
+        run: |
+          REGISTRY_OWNER="${{ vars.GITEA_ORG || github.repository_owner }}"
+          REGISTRY_REPO="registry"
+
+          curl -fsSL -X POST \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/actions/workflows/upsert-project.yml/dispatches" \
+            -H "Authorization: token ${{ secrets.GITEA_REGISTRY_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg project_name "${{ steps.meta.outputs.project_name }}" \
+              --arg display_name "${{ inputs.display_name }}" \
+              --arg description "${{ steps.meta.outputs.description }}" \
+              --arg repo_github "${{ steps.meta.outputs.repo_github }}" \
+              --arg repo_gitea "${{ steps.meta.outputs.repo_gitea }}" \
+              --arg tags "${{ inputs.tags }}" \
+              --arg license "${{ steps.meta.outputs.license }}" \
+              '{ref: "main", inputs: {
+                project_name: $project_name,
+                display_name: $display_name,
+                description: $description,
+                repo_github: $repo_github,
+                repo_gitea: $repo_gitea,
+                tags: $tags,
+                license: $license
+              }}')"

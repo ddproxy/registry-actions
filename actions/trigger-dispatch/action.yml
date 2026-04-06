@@ -1,37 +1,34 @@
 name: 'Trigger Registry Dispatch'
-description: 'Triggers a workflow dispatch in a registry repository.'
+description: 'Triggers a workflow dispatch in a registry repository via gh CLI (JSON stdin).'
 inputs:
   workflow_name:
-    description: 'The name of the workflow file to trigger (e.g., add-version.yml)'
+    description: 'The workflow file to trigger (e.g., upsert-version.yml)'
+    required: true
+  inputs_json:
+    description: 'JSON object of workflow inputs (will be wrapped with ref: main)'
     required: true
   registry_repo:
-    description: 'The registry repository (defaults to project-registry)'
+    description: 'Registry repository name'
     required: false
     default: 'project-registry'
   registry_owner:
-    description: 'The owner/org of the registry repo (defaults to current)'
+    description: 'Owner/org of the registry repo (defaults to current repository owner)'
     required: false
   github_token:
-    description: 'The GitHub token for making changes'
-    required: true
-  inputs:
-    description: 'JSON string of inputs to pass to the workflow'
+    description: 'Token with actions:write access on the registry repository'
     required: true
 runs:
   using: 'composite'
   steps:
-    - name: Trigger Dispatch
+    - name: Dispatch workflow
       shell: bash
       run: |
-        # Validate inputs is valid JSON
-        if ! echo '${{ inputs.inputs }}' | jq . > /dev/null 2>&1; then
-          echo "Error: 'inputs' must be a valid JSON string."
-          exit 1
-        fi
+        OWNER="${{ inputs.registry_owner }}"
+        [ -z "$OWNER" ] && OWNER="${GITHUB_REPOSITORY_OWNER}"
+        REPO="${OWNER}/${{ inputs.registry_repo }}"
 
-        REPO="${{ inputs.registry_owner || github.repository_owner }}/${{ inputs.registry_repo }}"
-        gh workflow run "${{ inputs.workflow_name }}" \
-          --repo "$REPO" \
-          --json-inputs '${{ inputs.inputs }}'
+        jq -n --argjson inputs '${{ inputs.inputs_json }}' \
+          '{ref: "main", inputs: $inputs}' \
+          | gh workflow run "${{ inputs.workflow_name }}" --repo "$REPO" --json -
       env:
         GH_TOKEN: ${{ inputs.github_token }}

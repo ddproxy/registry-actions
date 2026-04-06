@@ -4,12 +4,21 @@ GitHub/Gitea Actions for managing a [project registry](https://github.com/ddprox
 
 ## Actions
 
+### `actions/trigger-dispatch`
+
+Triggers a `workflow_dispatch` event on a registry workflow via `gh workflow run --json -`. Used by callers to submit registration requests without requiring `contents:write` on the registry — the registry runs the write with its own `GITHUB_TOKEN`.
+
+| Input | Required | Description |
+|-------|----------|-------------|
+| `workflow_name` | Yes | Workflow file to trigger (e.g. `upsert-version.yml`) |
+| `inputs_json` | Yes | Compact JSON object of workflow inputs |
+| `registry_repo` | No | Registry repo name (default: `project-registry`) |
+| `registry_owner` | No | Registry repo owner (default: current owner) |
+| `github_token` | Yes | Token with `actions:write` on the registry |
+
 ### `actions/upsert-project`
 
-Creates or updates a project metadata record in the registry.
-
-- **Create** — builds a full record; auto-generates `displayName` from the slug if blank, defaults `license` to MIT.
-- **Update** — only the fields you provide are changed; everything else is left untouched.
+Creates or updates a project metadata record directly in the registry repository. Intended for use by the **registry's own workflows** only — requires `contents:write` on the registry.
 
 | Input | Required | Description |
 |-------|----------|-------------|
@@ -22,14 +31,11 @@ Creates or updates a project metadata record in the registry.
 | `license` | No | License identifier (default: `MIT` on create) |
 | `registry_repo` | No | Registry repo name (default: `project-registry`) |
 | `registry_owner` | No | Registry repo owner (default: current owner) |
-| `github_token` | Yes | Token with write access to the registry |
+| `github_token` | Yes | Token with `contents:write` on the registry |
 
 ### `actions/upsert-version`
 
-Creates or updates a version record in the registry. Also syncs the version index and updates `latestVersion` in the project record on create.
-
-- **Create** — `asset_source` is required; `changelog` defaults to an empty list, `license` to MIT.
-- **Update** — only the fields you provide are changed; version index is kept in sync automatically.
+Creates or updates a version record directly in the registry repository. Also syncs the version index and updates `latestVersion` in the project record on create. Intended for use by the **registry's own workflows** only.
 
 | Input | Required | Description |
 |-------|----------|-------------|
@@ -43,46 +49,54 @@ Creates or updates a version record in the registry. Also syncs the version inde
 | `license` | No | License identifier (default: `MIT` on create) |
 | `registry_repo` | No | Registry repo name (default: `project-registry`) |
 | `registry_owner` | No | Registry repo owner (default: current owner) |
-| `github_token` | Yes | Token with write access to the registry |
+| `github_token` | Yes | Token with `contents:write` on the registry |
 
 ## Usage
 
 ### Automatic version registration on tag push
 
+Build your metadata in a `run` step, then dispatch:
+
 ```yaml
-- name: Upsert version in registry
-  uses: ddproxy/registry-actions/actions/upsert-version@v0.1.0
+- name: Build dispatch payload
+  id: payload
+  run: |
+    echo "inputs_json=$(jq -cn \
+      --arg project_name "my-project" \
+      --arg version "${{ github.ref_name }}" \
+      --arg asset_source "https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.ref_name }}.tar.gz" \
+      --arg repo_tag_github "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" \
+      '{project_name:$project_name,version:$version,asset_source:$asset_source,repo_tag_github:$repo_tag_github}')" \
+      >> $GITHUB_OUTPUT
+
+- name: Dispatch upsert-version to registry
+  uses: ddproxy/registry-actions/actions/trigger-dispatch@v0.1.0
   with:
-    project_name: my-project
-    version: ${{ github.ref_name }}
-    changelog: |
-      Fix critical bug in parser
-      Improve startup performance
-    asset_source: https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.ref_name }}.tar.gz
-    repo_tag_github: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+    workflow_name: upsert-version.yml
+    inputs_json: ${{ steps.payload.outputs.inputs_json }}
     github_token: ${{ secrets.REGISTRY_TOKEN }}
 ```
 
-### Patching an existing record (e.g. adding a Gitea URL later)
+## Architecture
 
-```yaml
-- name: Add Gitea URL to project
-  uses: ddproxy/registry-actions/actions/upsert-project@v0.1.0
-  with:
-    project_name: my-project
-    repo_gitea: https://git.example.com/org/my-project
-    github_token: ${{ secrets.REGISTRY_TOKEN }}
+Repositories dispatch to the registry via `trigger-dispatch` — no `contents:write` needed on the registry, no secrets passed as workflow inputs. The registry's own workflows receive the dispatch and perform the write using their own `GITHUB_TOKEN`.
+
+```
+caller repo                     ddproxy/project-registry
+─────────────────────────────   ──────────────────────────────────
+trigger-dispatch  ──────────►  upsert-version.yml  (GITHUB_TOKEN)
+  (actions:write only)           └─ upsert-version action
+                                      └─ git commit + push
 ```
 
 ## Secrets and variables
 
 | Name | Where | Purpose |
 |------|-------|---------|
-| `REGISTRY_TOKEN` | GitHub secret | Write access to `project-registry` |
-| `GITEA_REGISTRY_TOKEN` | Gitea secret | Write access to Gitea `registry` repo |
+| `REGISTRY_TOKEN` | Caller repo secret | `actions:write` on `project-registry` — triggers dispatch, never writes directly |
+| `GITEA_REGISTRY_TOKEN` | Gitea secret | `actions:write` on Gitea `registry` repo |
 | `GITEA_BASE_URL` | GitHub org/repo variable | Gitea web base URL (e.g. `https://git.example.com`) |
 | `GITEA_ORG` | GitHub org/repo variable | Gitea org slug (e.g. `com.example`) |
-| `GITHUB_MIRROR_URL` | Gitea repo variable | Full GitHub repo URL for the mirror |
 
 ## Included workflows
 

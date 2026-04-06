@@ -43,7 +43,7 @@ inputs:
     description: 'The owner/org of the registry repo. Defaults to current repository owner.'
     required: false
   github_token:
-    description: 'Token with write access to the registry repository.'
+    description: 'Token with contents:write access on the registry repository.'
     required: true
 runs:
   using: 'composite'
@@ -66,7 +66,6 @@ runs:
         mkdir -p "$VERSION_DIR"
 
         if [ -f "$VERSION_FILE" ]; then
-          # ── UPDATE: patch only non-blank fields ───────────────────────────
           jq \
             --arg changelog_raw "${{ inputs.changelog }}" \
             --arg asset_source "${{ inputs.asset_source }}" \
@@ -88,7 +87,6 @@ runs:
 
           echo "Updated version: ${{ inputs.version }} for project ${{ inputs.project_name }}"
         else
-          # ── CREATE: build full record, asset_source is required ───────────
           if [ -z "${{ inputs.asset_source }}" ]; then
             echo "Error: asset_source is required when creating a new version record."
             exit 1
@@ -123,7 +121,6 @@ runs:
               license: $license
             }' > "$VERSION_FILE"
 
-          # Update latestVersion in project metadata
           if [ -f "$PROJECT_FILE" ]; then
             jq --arg version "${{ inputs.version }}" \
               '.latestVersion = $version' \
@@ -145,7 +142,6 @@ runs:
           echo '[]' > "$VERSION_INDEX"
         fi
 
-        # Replace matching entry or append if new
         jq --argjson v "$(cat "$VERSION_FILE")" \
           'map(if .version == $v.version then $v else . end) as $updated
            | if ($updated | map(.version) | contains([$v.version])) then $updated else $updated + [$v] end' \

@@ -1,14 +1,3 @@
-# Registers or updates this repository's project record in the ddproxy registry.
-# Run manually at any time — creates the record on first run, patches it on
-# subsequent runs. Only fields provided at dispatch time are changed.
-#
-# Required secrets:
-#   REGISTRY_TOKEN  - Token with write access to the registry repository
-#
-# Optional repository variables:
-#   GITEA_BASE_URL  - Base URL of your Gitea instance (e.g. https://git.example.com)
-#   GITEA_ORG       - Gitea org that owns this repo (e.g. com.example)
-
 name: Upsert Project
 
 on:
@@ -18,7 +7,7 @@ on:
         description: 'Display name (auto-generated from repo name if blank on create)'
         required: false
       description:
-        description: 'Project description (auto-detected from package.json if blank)'
+        description: 'Project description'
         required: false
       repo_gitea:
         description: 'Gitea URL (auto-built from GITEA_BASE_URL+GITEA_ORG if blank)'
@@ -30,7 +19,7 @@ on:
         description: 'Comma-separated tags'
         required: false
       license:
-        description: 'License identifier (auto-detected from package.json if blank)'
+        description: 'License identifier (auto-detected if blank)'
         required: false
 
 permissions:
@@ -45,15 +34,13 @@ jobs:
       - name: Resolve metadata
         id: meta
         run: |
+          PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
+
+          AUTO_LICENSE="MIT"
+          AUTO_DESC=""
           if [ -f "package.json" ]; then
-            RAW_NAME=$(jq -r '.name' package.json)
-            PROJECT_NAME="${RAW_NAME##*/}"
             AUTO_DESC=$(jq -r '.description // ""' package.json)
             AUTO_LICENSE=$(jq -r '.license // "MIT"' package.json)
-          else
-            PROJECT_NAME="${GITHUB_REPOSITORY##*/}"
-            AUTO_DESC=""
-            AUTO_LICENSE="MIT"
           fi
 
           DESCRIPTION="${{ inputs.description }}"
@@ -76,16 +63,23 @@ jobs:
           echo "repo_github=${REPO_GITHUB}" >> $GITHUB_OUTPUT
           echo "repo_gitea=${REPO_GITEA}" >> $GITHUB_OUTPUT
 
-      - name: Upsert project in registry
-        uses: ./actions/upsert-project
+      - name: Build dispatch payload
+        id: payload
+        run: |
+          echo "inputs_json=$(jq -cn \
+            --arg project_name "${{ steps.meta.outputs.project_name }}" \
+            --arg display_name "${{ inputs.display_name }}" \
+            --arg description "${{ steps.meta.outputs.description }}" \
+            --arg repo_github "${{ steps.meta.outputs.repo_github }}" \
+            --arg repo_gitea "${{ steps.meta.outputs.repo_gitea }}" \
+            --arg tags "${{ inputs.tags }}" \
+            --arg license "${{ steps.meta.outputs.license }}" \
+            '{project_name:$project_name,display_name:$display_name,description:$description,repo_github:$repo_github,repo_gitea:$repo_gitea,tags:$tags,license:$license}')" \
+            >> $GITHUB_OUTPUT
+
+      - name: Dispatch upsert-project to registry
+        uses: ddproxy/registry-actions/actions/trigger-dispatch@v0.1.0
         with:
-          project_name: ${{ steps.meta.outputs.project_name }}
-          display_name: ${{ inputs.display_name }}
-          description: ${{ steps.meta.outputs.description }}
-          repo_github: ${{ steps.meta.outputs.repo_github }}
-          repo_gitea: ${{ steps.meta.outputs.repo_gitea }}
-          tags: ${{ inputs.tags }}
-          license: ${{ steps.meta.outputs.license }}
-          registry_repo: project-registry
-          registry_owner: ddproxy
+          workflow_name: upsert-project.yml
+          inputs_json: ${{ steps.payload.outputs.inputs_json }}
           github_token: ${{ secrets.REGISTRY_TOKEN }}
